@@ -1,12 +1,21 @@
+import logging
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import List, Dict, Tuple, Optional, Union
 
+logger = logging.getLogger(__name__)
+
 
 class BDTModel:
     """黑-德曼-托伊(Black-Derman-Toy)模型实现
+
     用于可赎回/可回售债券的定价，基于利率的二叉树模型
+
+    参考文献：
+    [1] Black, F., Derman, E., and Toy, W. (1990). "A One-Factor Model of Interest
+        Rates and Its Application to Treasury Bond Options." Financial Analysts Journal.
+    [2] Hull, J. "Options, Futures, and Other Derivatives."
     """
 
     def __init__(self,
@@ -14,24 +23,41 @@ class BDTModel:
                  time_points: List[datetime],
                  spot_rates: List[float],
                  volatilities: List[float],
-                 day_count_convention: str = 'ACT/365', ):
+                 day_count_convention: str = 'ACT/365',
+                 calibration_tolerance: float = 1e-8,
+                 max_calibration_iteration: int = 100,
+                 u_bounds: Tuple[float, float] = (1e-4, 0.5)):
         """初始化BDT模型
         :param valuation_date: 估值日期
         :param time_points: 二叉树节点对应的日期
         :param spot_rates: 即期利率列表
         :param volatilities: 波动率列表
         :param day_count_convention: 天数计算方式，计日惯例为 'ACT/365'
+        :param calibration_tolerance: 校准容差
+        :param max_calibration_iteration: 最大校准迭代次数
+        :param u_bounds: 中间利率u(i)的上下界
         """
+        assert len(time_points) == len(spot_rates) == len(volatilities), \
+            "时间点、即期利率和波动率列表长度不一致"
+        assert len(time_points) >= 2, "时间点列表至少需要包含两个时间点"
         self.valuation_date = valuation_date
         self.time_points = time_points
-        self.spot_rates = spot_rates
-        self.volatilities = volatilities
+        self.spot_rates = np.array(spot_rates)
+        self.volatilities = np.array(volatilities)
         self.day_count_convention = day_count_convention
+        self.calibration_tolerance = calibration_tolerance
+        self.max_calibration_iteration = max_calibration_iteration
+        self.u_bounds = u_bounds
+
+        # 计算时间步长 (年化)
         self.time_steps = self._calculate_time_steps()
+
+        # 树上的节点 (将在 build_tree 中填充)
         self.middle_rates = None  # 中间利率 u(i)
         self.short_rates = None  # 短期利率 r(i,j)
         self.discount_factors = None  # 折现因子 d(i,j)
         self.state_prices = None  # 状态价格 Q(i,j)
+        self._n_steps = len(time_points)  # 二叉树的步数
 
     def _calculate_time_steps(self) -> List[float]:
         """计算每个时间点到上一个时间点的年化时间
